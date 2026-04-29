@@ -22,9 +22,23 @@ from providers import ClaudeMediator, GeminiExtractor, OpenAIExtractor, Provider
 from schema import following_context_pages
 
 
-ProgressCallback = Callable[[str, int, int], None]
+ProgressCallback = Callable[[str, int, int, int | None], None]
+CancellationCallback = Callable[[], bool]
+PageResultCallback = Callable[[dict[str, Any], int, int], None]
+PageResultsLoader = Callable[[], list[dict[str, Any]]]
 ProviderTask = Callable[[], ProviderResult]
 PROVIDER_POLL_SECONDS = 0.25
+
+
+class ExtractionCancelled(Exception):
+    """Raised when the current extraction run is cancelled by the user."""
+
+
+def raise_if_cancelled(cancellation_callback: CancellationCallback | None) -> None:
+    """Stop the pipeline before starting or saving more page work."""
+
+    if cancellation_callback and cancellation_callback():
+        raise ExtractionCancelled("Extraction cancelled by user.")
 
 
 @dataclass
@@ -67,7 +81,9 @@ def run_provider_tasks(
     progress_callback: ProgressCallback | None = None,
     progress_index: int = 0,
     progress_total: int = 1,
+    current_page: int | None = None,
     task_labels: dict[str, str] | None = None,
+    cancellation_callback: CancellationCallback | None = None,
 ) -> dict[str, ProviderResult]:
     """Run provider calls concurrently while allowing Streamlit progress refreshes."""
 
@@ -75,12 +91,16 @@ def run_provider_tasks(
     if not tasks:
         return results
 
-    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        future_names: dict[Future[ProviderResult], str] = {
-            executor.submit(task): name for name, task in tasks.items()
-        }
+    raise_if_cancelled(cancellation_callback)
+    executor = ThreadPoolExecutor(max_workers=len(tasks))
+    future_names: dict[Future[ProviderResult], str] = {
+        executor.submit(task): name for name, task in tasks.items()
+    }
+    shutdown_wait = True
+    try:
         pending = set(future_names)
         while pending:
+            raise_if_cancelled(cancellation_callback)
             done, pending = wait(
                 pending,
                 timeout=PROVIDER_POLL_SECONDS,
@@ -96,9 +116,18 @@ def run_provider_tasks(
                         f"Page {page_number}: Waiting for {', '.join(waiting_on)} during {operation}",
                         progress_index,
                         progress_total,
+                        current_page or page_number,
                     )
+                    raise_if_cancelled(cancellation_callback)
             for future in done:
                 results[future_names[future]] = future.result()
+    except ExtractionCancelled:
+        shutdown_wait = False
+        for future in future_names:
+            future.cancel()
+        raise
+    finally:
+        executor.shutdown(wait=shutdown_wait, cancel_futures=not shutdown_wait)
 
     return results
 
@@ -153,9 +182,12 @@ def build_key_manifest(
     progress_callback: ProgressCallback | None = None,
     progress_index: int = 0,
     progress_total: int = 1,
+    current_page: int | None = None,
+    cancellation_callback: CancellationCallback | None = None,
 ) -> dict[str, Any]:
     """Ask both baseline providers for anchor-page record keys and merge them."""
 
+    raise_if_cancelled(cancellation_callback)
     manifest_results = run_provider_tasks(
         {
             "OpenAI": lambda: openai_extractor.extract_key_manifest(
@@ -174,11 +206,14 @@ def build_key_manifest(
         progress_callback=progress_callback,
         progress_index=progress_index,
         progress_total=progress_total,
+        current_page=current_page or page.page_number,
         task_labels={
             "OpenAI": f"OpenAI model {openai_extractor.model}",
             "Gemini": f"Gemini model {gemini_extractor.model}",
         },
+        cancellation_callback=cancellation_callback,
     )
+    raise_if_cancelled(cancellation_callback)
     openai_result = manifest_results["OpenAI"]
     gemini_result = manifest_results["Gemini"]
 
@@ -323,9 +358,11 @@ def process_page(
     progress_callback: ProgressCallback | None = None,
     progress_index: int = 0,
     progress_total: int = 1,
+    cancellation_callback: CancellationCallback | None = None,
 ) -> dict[str, Any]:
     """Run both baselines, compare them, optionally mediate, and merge one page."""
 
+    raise_if_cancelled(cancellation_callback)
     key_manifest = None
     expected_key_ids: list[str] | None = None
     expected_key_display: dict[str, str] | None = None
@@ -339,11 +376,14 @@ def process_page(
             progress_callback=progress_callback,
             progress_index=progress_index,
             progress_total=progress_total,
+            current_page=page.page_number,
+            cancellation_callback=cancellation_callback,
         )
         expected_key_ids = key_manifest["expected_key_ids"]
         expected_key_display = key_manifest["display_by_key"]
         expected_keys_for_prompt = key_manifest["expected_keys"]
 
+    raise_if_cancelled(cancellation_callback)
     baseline_results = run_provider_tasks(
         {
             "OpenAI": lambda: openai_extractor.extract_page(
@@ -366,11 +406,14 @@ def process_page(
         progress_callback=progress_callback,
         progress_index=progress_index,
         progress_total=progress_total,
+        current_page=page.page_number,
         task_labels={
             "OpenAI": f"OpenAI model {openai_extractor.model}",
             "Gemini": f"Gemini model {gemini_extractor.model}",
         },
+        cancellation_callback=cancellation_callback,
     )
+    raise_if_cancelled(cancellation_callback)
     openai_result = baseline_results["OpenAI"]
     gemini_result = baseline_results["Gemini"]
 
@@ -390,6 +433,7 @@ def process_page(
     if not diff["agreed"]:
         mediated = claude_mediator is not None
         if claude_mediator is not None:
+            raise_if_cancelled(cancellation_callback)
             mediation_results = run_provider_tasks(
                 {
                     "Claude": lambda: claude_mediator.mediate_page(
@@ -408,8 +452,11 @@ def process_page(
                 progress_callback=progress_callback,
                 progress_index=progress_index,
                 progress_total=progress_total,
+                current_page=page.page_number,
                 task_labels={"Claude": f"Claude model {claude_mediator.model}"},
+                cancellation_callback=cancellation_callback,
             )
+            raise_if_cancelled(cancellation_callback)
             claude_result = mediation_results["Claude"]
             claude_page = canonicalize_page_output(claude_result.parsed, "claude", page.page_number, profile)
 
@@ -429,6 +476,7 @@ def process_page(
             record["needs_review"] = True
         status = "needs_review"
 
+    raise_if_cancelled(cancellation_callback)
     return {
         "page_number": page.page_number,
         "context_pages": page.context_page_numbers,
@@ -502,9 +550,13 @@ def process_document(
     config: PipelineConfig,
     progress_callback: ProgressCallback | None = None,
     debug_monitor: ExtractionDebugMonitor | None = None,
+    page_result_callback: PageResultCallback | None = None,
+    page_results_loader: PageResultsLoader | None = None,
+    cancellation_callback: CancellationCallback | None = None,
 ) -> dict[str, Any]:
     """Process a full PDF page by page and return final plus debug JSON."""
 
+    raise_if_cancelled(cancellation_callback)
     profile = config.extraction_profile
     context_pages = following_context_pages(profile)
     prepared_pdf = split_pdf_into_pages(
@@ -524,24 +576,33 @@ def process_document(
     try:
         total_pages = len(prepared_pdf.windows)
         for index, page in enumerate(prepared_pdf.windows, start=1):
+            raise_if_cancelled(cancellation_callback)
             if progress_callback:
-                progress_callback(f"Processing page {page.page_number}", index - 1, total_pages)
-            page_results.append(
-                process_page(
-                    page,
-                    profile,
-                    openai_extractor,
-                    gemini_extractor,
-                    claude_mediator,
-                    use_context_manifest=context_pages > 0,
-                    progress_callback=progress_callback,
-                    progress_index=index - 1,
-                    progress_total=total_pages,
-                )
+                progress_callback(f"Processing page {page.page_number}", index - 1, total_pages, page.page_number)
+            raise_if_cancelled(cancellation_callback)
+            page_result = process_page(
+                page,
+                profile,
+                openai_extractor,
+                gemini_extractor,
+                claude_mediator,
+                use_context_manifest=context_pages > 0,
+                progress_callback=progress_callback,
+                progress_index=index - 1,
+                progress_total=total_pages,
+                cancellation_callback=cancellation_callback,
             )
+            raise_if_cancelled(cancellation_callback)
+            page_results.append(page_result)
+            if page_result_callback:
+                page_result_callback(page_result, index, total_pages)
             if progress_callback:
-                progress_callback(f"Completed page {page.page_number}", index, total_pages)
+                progress_callback(f"Completed page {page.page_number}", index, total_pages, None)
+            raise_if_cancelled(cancellation_callback)
 
+        raise_if_cancelled(cancellation_callback)
+        if page_results_loader:
+            page_results = page_results_loader()
         final_json = build_document_export(document_id, profile, page_results)
         if debug_monitor:
             debug_monitor.finish_run()

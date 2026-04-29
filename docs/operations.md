@@ -1,6 +1,6 @@
 # Operations
 
-Generated from the current source tree on 2026-04-19.
+Generated from the current source tree on 2026-04-29.
 
 ## Runtime Requirements
 
@@ -60,7 +60,9 @@ The app opens a Streamlit UI with:
 - an Extraction tab,
 - a Profile configuration tab,
 - a sidebar for model names and max-page limit,
-- progress status text and a final run report during extraction.
+- progress status text and a final run report during extraction,
+- a Stop extraction button for the current run,
+- a durable local run folder for each extraction.
 
 ## Model Defaults
 
@@ -91,13 +93,46 @@ page is not processed as its own anchor unless it is inside the max-page limit.
 
 ## Output Files
 
-The app does not automatically write extraction output to the repository. It
-offers download buttons for:
+The app creates a local run directory for every extraction:
+
+```text
+runs/<run_id>/
+```
+
+Each run folder contains:
+
+- `input.pdf`: the uploaded source PDF,
+- `run.json`: run id, document id, original filename, selected profile, and
+  non-secret model/config values,
+- `status.json`: live status, page progress, timestamps, and the latest message,
+- `pages/page_NNNN.json`: one checkpoint per completed page,
+- `final.json`: final export after successful completion,
+- `debug.json`: debug export after successful completion.
+
+The `runs/` directory is ignored by git because it can contain source PDFs and
+large debug data. The app also offers download buttons for:
 
 - final JSON: `<document_id>_final.json`
 - debug JSON: `<document_id>_debug.json`
 
 Saved profiles are written to `extraction_profiles/<slugified-profile-name>.json`.
+
+## Stopping a Run
+
+During an active extraction, click **Stop extraction** to cancel the current
+run. The app updates `status.json` to `cancelled`, keeps page checkpoints that
+were already completed, and discards the active page.
+
+In `status.json`, `completed_pages` means durable page checkpoints already
+written, while `current_page` means the page currently being processed. During
+page 12 of 100, a normal running status can show `completed_pages: 11` and
+`current_page: 12`.
+
+For example, if cancellation is requested while page 12 of 100 is active, the
+run folder keeps completed checkpoints such as pages 1 through 11. Page 12 is
+not written. Because provider SDK requests are blocking network calls, a request
+that is already in flight may still finish remotely, but the pipeline ignores
+that active-page result.
 
 ## Troubleshooting
 

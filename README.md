@@ -1,6 +1,6 @@
 # Configurable PDF to JSON Extractor
 
-Generated from the current source tree on 2026-04-19.
+Generated from the current source tree on 2026-04-29.
 
 This project is a Streamlit application for extracting structured JSON records
 from PDFs. Users define an extraction profile, upload a PDF, and run a
@@ -63,7 +63,8 @@ streamlit run main.py
 The app has two Streamlit tabs:
 
 - **Extraction**: choose a profile, upload a PDF, run extraction, download final
-  and debug JSON, and inspect the final run report.
+  and debug JSON, inspect the final run report, and review the durable run
+  folder created under `runs/`.
 - **Profile configuration**: edit, validate, preview, and save extraction
   profiles.
 
@@ -74,6 +75,17 @@ During extraction, the progress text reports the current page and provider the
 app is waiting on. After extraction, the run report shows provider timings and
 token counts when the provider SDK response includes usage metadata; otherwise
 the affected calls are marked as unknown.
+
+Every extraction creates a local run directory under `runs/<run_id>/`. The app
+stores the uploaded `input.pdf`, the selected profile/config snapshot, one
+checkpoint JSON file per completed page, and the final/debug JSON exports there.
+The `runs/` directory is ignored by git because it can contain source PDFs and
+large provider debug output.
+
+The active extraction view includes a **Stop extraction** button. Stopping a run
+marks `status.json` as `cancelled`, keeps only previously completed page
+checkpoints, and discards the active page. Provider SDK calls that are already
+in flight may still finish remotely, but their active-page result is not saved.
 
 Profiles can opt into two-page continuation handling with:
 

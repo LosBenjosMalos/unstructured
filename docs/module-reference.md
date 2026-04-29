@@ -1,6 +1,6 @@
 # Module Reference
 
-Generated from the current source tree on 2026-04-19.
+Generated from the current source tree on 2026-04-29.
 
 ## `main.py`
 
@@ -10,8 +10,6 @@ Streamlit UI for the application.
 
 - `env_status(name)`: reports whether an API key environment variable is set
   without exposing the value.
-- `save_uploaded_pdf(uploaded_file)`: writes a Streamlit upload to a temporary
-  PDF file and returns the path.
 - `parse_profile_text(profile_text)`: parses profile JSON from the editor and
   validates it.
 - `render_profile_editor()`: renders the profile configuration tab, including
@@ -19,8 +17,8 @@ Streamlit UI for the application.
 - `render_page_summary(page)`: renders page status, context pages, key manifest,
   diff, provider outputs, canonical outputs, and final records.
 - `render_extraction_page()`: renders the extraction tab, validates API keys,
-  runs the pipeline, renders the final run report, and displays download
-  buttons.
+  runs the pipeline, renders the current-run Stop button, renders the final run
+  report, and displays download buttons.
 - `render_sidebar()`: renders API key status, model names, and max-page limit.
 - `main()`: configures Streamlit and renders the app tabs.
 
@@ -29,8 +27,34 @@ Streamlit UI for the application.
 - `config_store.list_profiles`, `load_profile`, `save_profile`
 - `pipeline.PipelineConfig`, `process_document`, `to_pretty_json`
 - `debug_monitor.ExtractionDebugMonitor`, `render_run_report`
+- `run_store.create_run`
 - `schema.build_page_schema`, `output_preview`, `validate_profile`
 - `streamlit`
+
+## `run_store.py`
+
+Durable local filesystem storage for long extraction runs.
+
+### Classes
+
+- `ExtractionRun`: dataclass containing the run id and run directory. It exposes
+  paths for `input.pdf`, `status.json`, `final.json`, `debug.json`, and the
+  page checkpoint directory.
+
+### Functions
+
+- `create_run(...)`: creates `runs/<run_id>/`, writes `run.json`, and
+  initializes `status.json`.
+- `ExtractionRun.read_status()`: reads the durable `status.json` state.
+- `slugify(value)`: creates a filesystem-safe document slug for run ids.
+- `utc_now()`: returns an ISO 8601 UTC timestamp.
+- `read_json(path)`: reads a JSON object.
+- `atomic_write_json(path, data)`: writes JSON via replace to avoid partial
+  files.
+
+### Key Dependencies
+
+- Python standard library only.
 
 ## `debug_monitor.py`
 
@@ -74,7 +98,7 @@ End-to-end orchestration for document processing.
 - `provider_debug(result)`: converts a provider result into JSON-serializable
   debug data.
 - `run_provider_tasks(...)`: runs provider calls concurrently while periodically
-  refreshing progress callbacks.
+  refreshing progress callbacks and checking for cancellation.
 - `canonical_debug(page)`: exposes canonical page details for debug output.
 - `normalize_manifest_keys(parsed, profile)`: normalizes a provider key-manifest
   response using the selected key-field rules.
@@ -87,14 +111,21 @@ End-to-end orchestration for document processing.
 - `merge_page_records(...)`: merges agreed baseline records, mediated records,
   and manual-review fallbacks.
 - `process_page(...)`: optionally builds a key manifest, runs both baselines,
-  compares them, optionally mediates, and returns one anchor-page result.
+  compares them, optionally mediates, checks for cancellation, and returns one
+  anchor-page result.
 - `find_duplicate_keys(records, key_field)`: finds record keys appearing on more
   than one source page.
 - `build_document_export(document_id, profile, page_results)`: builds final
   document-level JSON.
 - `process_document(pdf_path, document_id, config, progress_callback=None,
-  debug_monitor=None)`: splits the PDF, processes pages, builds final and debug
-  exports, and cleans temporary files.
+  debug_monitor=None, page_result_callback=None, page_results_loader=None,
+  cancellation_callback=None)`:
+  splits the PDF, processes pages, optionally checkpoints page results, builds
+  final and debug exports, and cleans temporary files.
+- `ProgressCallback`: receives message, completed page count, total page count,
+  and optional current page number for durable status updates.
+- `ExtractionCancelled`: exception raised when the active run is cancelled
+  before more work should be saved.
 - `to_pretty_json(data)`: serializes data with indentation and Unicode support.
 
 ### Key Dependencies

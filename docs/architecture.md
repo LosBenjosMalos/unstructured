@@ -1,6 +1,6 @@
 # Architecture
 
-Generated from the current source tree on 2026-04-19.
+Generated from the current source tree on 2026-04-29.
 
 ## Purpose
 
@@ -15,9 +15,11 @@ normalization, otherwise an optional mediator or manual review is used."
 flowchart TD
     U["User in Streamlit"] --> UI["main.py"]
     UI --> Store["config_store.py"]
+    UI --> RunStore["run_store.py"]
     UI --> Pipe["pipeline.py"]
     UI --> Monitor["debug_monitor.py"]
     Store --> Profiles["extraction_profiles/*.json"]
+    RunStore --> Runs["runs/<run_id>/"]
     Pipe --> PDF["pdf_pages.py"]
     Pipe --> Providers["providers.py"]
     Pipe --> Monitor
@@ -43,12 +45,27 @@ flowchart TD
 - profile editing and validation,
 - PDF upload,
 - extraction progress,
+- durable run directory creation and page checkpoint callbacks,
+- current-run cancellation control,
 - live run debugging and timing reports,
 - final JSON and debug JSON display,
 - download buttons.
 
 The UI constructs a `PipelineConfig` and calls `process_document`. It does not
 directly call provider APIs.
+
+### Run Store Layer
+
+`run_store.py` owns durable local extraction artifacts under `runs/<run_id>/`:
+
+- uploaded `input.pdf`,
+- non-secret `run.json` profile/config snapshot,
+- live `status.json`,
+- one `pages/page_0001.json` checkpoint per completed page,
+- completed `final.json` and `debug.json` exports.
+
+The run store does not persist API keys. The `runs/` directory is ignored by
+git because it can contain source documents and large debug output.
 
 ### Pipeline Layer
 
@@ -60,11 +77,21 @@ directly call provider APIs.
 - process each anchor page,
 - build optional anchor key manifests,
 - run OpenAI and Gemini baseline calls concurrently,
+- stop before starting or saving more page work when cancellation is requested,
 - compare baseline outputs,
 - call mediation if needed and configured,
 - merge records into final page results,
 - build final document export and debug export,
 - clean up temporary page PDFs.
+
+When callbacks are provided, the pipeline writes each completed page result to
+durable storage before continuing. At the end of the run, final and debug
+exports are built from the checkpointed page files.
+
+When a cancellation callback is provided, the pipeline checks it before
+starting pages, while waiting on provider futures, before mediation, and before
+checkpointing a completed page. A cancellation raises `ExtractionCancelled`, so
+the active page is not added to the run checkpoints.
 
 ### Provider Layer
 
@@ -136,7 +163,8 @@ selected profile opts into following-page context.
 - **Python process**: Streamlit app and all orchestration logic.
 - **Local command dependency**: `qpdf` for deterministic page splitting.
 - **Remote model APIs**: OpenAI, Gemini, and optionally Claude.
-- **Local filesystem**: saved profiles and temporary PDFs.
+- **Local filesystem**: saved profiles, durable run folders, page checkpoints,
+  final/debug exports, and temporary split PDFs.
 
 ## Important Architectural Choices
 
@@ -167,6 +195,15 @@ provider results, canonicalized records, diffs, model names, and page statuses.
 For context-enabled profiles, debug output also includes context page numbers
 and key-manifest details.
 
+Completed page results are also written independently to the run folder. This
+makes partial long-running extractions inspectable even before final exports are
+created.
+
+Current-run cancellation marks the run `cancelled` and preserves only page
+checkpoints already written before the active page. In-flight provider SDK calls
+cannot be guaranteed to abort at the network level, but their active-page result
+is discarded.
+
 ## Current Limitations
 
 - There is no dependency manifest such as `requirements.txt` or `pyproject.toml`.
@@ -174,6 +211,9 @@ and key-manifest details.
 - `qpdf` is mandatory; there is no Python PDF fallback.
 - Provider model names are UI-configurable but default to the values currently
   coded in `main.py` and `pipeline.py`.
+- Extraction still runs synchronously inside the Streamlit process. Durable run
+  folders and cancellation make completed pages persistent, but they are not yet
+  a background job system or resume mechanism.
 - Baseline extraction requires both OpenAI and Gemini keys.
 - Claude mediation is optional; without it, disagreements become manual-review
   records.

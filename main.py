@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
 from config_store import list_profiles, load_profile, save_profile
 from debug_monitor import ExtractionDebugMonitor, render_run_report
-from pipeline import PipelineConfig, process_document, to_pretty_json
+from pipeline import ExtractionCancelled, PipelineConfig, process_document, to_pretty_json
+from run_store import create_run
 from schema import build_page_schema, output_preview, validate_profile
 
 
@@ -20,14 +19,6 @@ def env_status(name: str) -> str:
     """Return a safe status for an API key without exposing the secret value."""
 
     return "set" if os.getenv(name) else "missing"
-
-
-def save_uploaded_pdf(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Path:
-    """Persist a Streamlit upload to a temporary PDF path for qpdf and SDK uploads."""
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(uploaded_file.getbuffer())
-        return Path(tmp.name)
 
 
 def parse_profile_text(profile_text: str) -> tuple[dict[str, Any] | None, list[str]]:
@@ -187,17 +178,6 @@ def render_extraction_page() -> None:
             st.error("OpenAI and Gemini API keys are required for the baseline comparison.")
             st.stop()
 
-        temp_pdf_path = save_uploaded_pdf(uploaded)
-        progress_bar = st.progress(0)
-        progress_text = st.empty()
-        debug_monitor = ExtractionDebugMonitor()
-
-        def update_progress(message: str, index: int, total: int) -> None:
-            """Update Streamlit progress while the pipeline processes pages."""
-
-            progress_text.write(message)
-            progress_bar.progress(min(max(index / total, 0.0), 1.0) if total else 1.0)
-
         config = PipelineConfig(
             openai_api_key=os.environ["OPENAI_API_KEY"],
             gemini_api_key=os.environ["GEMINI_API_KEY"],
@@ -208,29 +188,136 @@ def render_extraction_page() -> None:
             claude_model=st.session_state["claude_model"],
             max_pages=st.session_state["max_pages"] or None,
         )
+        config_snapshot = {
+            "openai_model": config.openai_model,
+            "gemini_model": config.gemini_model,
+            "claude_model": config.claude_model,
+            "claude_enabled": bool(config.anthropic_api_key),
+            "max_pages": config.max_pages,
+        }
+        run = create_run(
+            document_id=document_id,
+            original_filename=uploaded.name,
+            profile=selected_profile,
+            config=config_snapshot,
+        )
+        run.write_input_pdf(bytes(uploaded.getbuffer()))
+
+        st.info(f"Run ID: {run.run_id}")
+        st.caption(f"Run files: {run.run_dir}")
+
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+        debug_monitor = ExtractionDebugMonitor()
+        cancel_state_key = f"cancel_requested_{run.run_id}"
+        if cancel_state_key not in st.session_state:
+            st.session_state[cancel_state_key] = False
+
+        def saved_page_count() -> int:
+            """Return how many page checkpoints are durable for this run."""
+
+            return len(run.load_page_results())
+
+        def request_cancel() -> None:
+            """Record a user cancellation without saving the active page."""
+
+            st.session_state[cancel_state_key] = True
+            run.update_status(
+                status="cancelled",
+                completed_pages=saved_page_count(),
+                message="Cancellation requested. Discarding the active page.",
+            )
+
+        def cancellation_requested() -> bool:
+            """Return whether the current run should stop before more work is saved."""
+
+            if st.session_state.get(cancel_state_key):
+                return True
+            try:
+                return run.read_status().get("status") == "cancelled"
+            except OSError:
+                return False
+
+        if cancellation_requested():
+            st.warning("Stopping extraction. The active page will not be saved.")
+        elif st.button("Stop extraction", key=f"stop_{run.run_id}"):
+            request_cancel()
+
+        def update_progress(
+            message: str,
+            completed_pages: int,
+            total: int,
+            current_page: int | None = None,
+        ) -> None:
+            """Update Streamlit progress and durable run status."""
+
+            if cancellation_requested():
+                progress_text.write("Cancellation requested. Discarding the active page.")
+                return
+            progress_text.write(message)
+            progress_bar.progress(min(max(completed_pages / total, 0.0), 1.0) if total else 1.0)
+            run.update_status(
+                status="running",
+                message=message,
+                completed_pages=completed_pages,
+                total_pages=total,
+                current_page=current_page,
+            )
+
+        def checkpoint_page(page_result: dict[str, Any], index: int, total: int) -> None:
+            """Write one completed page result to the durable run folder."""
+
+            if cancellation_requested():
+                return
+            run.write_page_result(page_result)
+            run.update_status(
+                status="running",
+                current_page=None,
+                completed_pages=index,
+                total_pages=total,
+                message=f"Completed page {page_result['page_number']}",
+            )
 
         try:
+            run.update_status(status="running", message="Starting extraction")
             with st.spinner("Extracting pages..."):
                 result = process_document(
-                    pdf_path=temp_pdf_path,
+                    pdf_path=run.input_pdf_path,
                     document_id=document_id,
                     config=config,
                     progress_callback=update_progress,
                     debug_monitor=debug_monitor,
+                    page_result_callback=checkpoint_page,
+                    page_results_loader=run.load_page_results,
+                    cancellation_callback=cancellation_requested,
                 )
+        except ExtractionCancelled:
+            completed_pages = saved_page_count()
+            run.update_status(
+                status="cancelled",
+                completed_pages=completed_pages,
+                current_page=None,
+                message=f"Extraction cancelled. Saved {completed_pages} completed pages.",
+            )
+            st.warning(f"Extraction cancelled. Saved {completed_pages} completed pages.")
+            st.stop()
         except Exception as exc:
+            run.update_status(status="failed", message=str(exc), error=str(exc))
             st.exception(exc)
             st.stop()
-        finally:
-            try:
-                temp_pdf_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        st.success("Extraction complete")
 
         final_json = result["final"]
         debug_json = result["debug"]
+        run.write_outputs(final_json, debug_json)
+        run.update_status(
+            status="completed",
+            completed_pages=debug_json["page_count"],
+            total_pages=debug_json["page_count"],
+            current_page=None,
+            message="Extraction complete",
+        )
+
+        st.success("Extraction complete")
 
         render_run_report(debug_json.get("run_debug") or {})
 

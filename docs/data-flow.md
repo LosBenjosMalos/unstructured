@@ -1,6 +1,6 @@
 # Runtime Data Flow
 
-Generated from the current source tree on 2026-04-19.
+Generated from the current source tree on 2026-04-29.
 
 ## End-to-End Flow
 
@@ -8,6 +8,7 @@ Generated from the current source tree on 2026-04-19.
 sequenceDiagram
     participant User
     participant UI as main.py
+    participant RunStore as run_store.py
     participant Pipeline as pipeline.py
     participant Monitor as debug_monitor.py
     participant PDF as pdf_pages.py
@@ -16,8 +17,10 @@ sequenceDiagram
     participant Schema as schema.py
 
     User->>UI: Upload PDF and choose profile
+    UI->>RunStore: create_run()
+    UI->>RunStore: write input.pdf, run.json, status.json
     UI->>Monitor: Create run monitor
-    UI->>Pipeline: process_document(pdf_path, document_id, config)
+    UI->>Pipeline: process_document(pdf_path, document_id, config, callbacks)
     Pipeline->>Monitor: Current step = PDF preparation
     Pipeline->>PDF: split_pdf_into_pages()
     PDF-->>Pipeline: PreparedPDF with PageWindow list
@@ -61,17 +64,30 @@ sequenceDiagram
         else Outputs differ and Claude is unavailable
             Pipeline->>Pipeline: create manual-review records
         end
+        alt Stop requested before checkpoint
+            Pipeline-->>UI: ExtractionCancelled
+            UI->>RunStore: status = cancelled
+        else Page accepted
+            Pipeline->>RunStore: write pages/page_NNNN.json
+        end
     end
+    Pipeline->>RunStore: load page checkpoints
     Pipeline->>Pipeline: build_document_export()
     Pipeline->>Monitor: Build final run report
     Pipeline-->>UI: final JSON and debug JSON
+    UI->>RunStore: write final.json and debug.json
     UI-->>User: Display run report, final JSON, and downloads
 ```
 
 ## Input Preparation
 
-The user uploads a PDF in Streamlit. `main.py` writes the uploaded bytes to a
-temporary `.pdf` file using `save_uploaded_pdf`.
+The user uploads a PDF in Streamlit. `main.py` creates a durable run directory
+with `run_store.create_run`, then writes the uploaded bytes to
+`runs/<run_id>/input.pdf`. It also writes:
+
+- `run.json`: run id, document id, original filename, selected profile, and
+  non-secret model/config values,
+- `status.json`: live status, page counts, current message, and timestamps.
 
 `pipeline.process_document` passes that path to `split_pdf_into_pages`, which:
 
@@ -83,6 +99,34 @@ temporary `.pdf` file using `save_uploaded_pdf`.
 6. returns a `PreparedPDF` containing `PageWindow` objects for processed anchors.
 
 The pipeline calls `PreparedPDF.cleanup()` in a `finally` block.
+
+## Run Checkpoints
+
+After each page finishes, the UI-provided checkpoint callback writes that full
+page result to `runs/<run_id>/pages/page_NNNN.json` and updates `status.json`.
+At the end of processing, `process_document` reloads those page checkpoints and
+uses them to build the final document export and debug export. The UI then saves
+those exports as `final.json` and `debug.json` in the run folder.
+
+The first checkpointing phase is still synchronous: it preserves completed page
+results, but it does not yet add background execution or resume.
+
+## Cancellation
+
+The active extraction view renders a **Stop extraction** button. When clicked,
+the UI sets a cancellation flag and writes `status: "cancelled"` to
+`status.json`. The pipeline checks the flag before starting pages, while waiting
+for provider futures, before mediation, and before checkpointing a page result.
+
+`status.json` tracks completed and active work separately. `completed_pages`
+counts saved page checkpoints, while `current_page` is the page currently being
+processed.
+
+If cancellation is requested on page 12 of 100, only page checkpoints that were
+already written, such as pages 1 through 11, remain in `pages/`. The active page
+is discarded and no `final.json` or `debug.json` is written for the cancelled
+run. Provider SDK calls that were already in flight may still finish remotely,
+but their active-page result is ignored.
 
 ## Baseline Extraction
 
@@ -249,6 +293,9 @@ The debug JSON includes:
 - diffs,
 - final page records,
 - run report data, including provider timings and usage metadata.
+
+The same debug JSON is written to `runs/<run_id>/debug.json` after a successful
+run.
 
 Use the debug export to inspect disagreements, provider failures, and time spent
 waiting on each provider. Token totals are exact only when the provider response
