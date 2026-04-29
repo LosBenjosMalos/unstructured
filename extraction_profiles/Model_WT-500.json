@@ -1,0 +1,113 @@
+{
+  "name": "Model WT-500",
+  "description": "Extraction profile for WT-500 supervision/alarm entries. JSON field keys match the labels from the document, but without punctuation such as ':' or '.'.",
+  "record_label": "entry",
+  "records_key": "records",
+  "key_field": "No",
+  "page_context": {
+    "following_pages": 1
+  },
+  "fields": {
+    "No": {
+      "type": "string",
+      "description": "Printed running entry number after 'No:'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "SupervisionID": {
+      "type": "string",
+      "description": "Supervision identifier after 'SupervisionID'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Name": {
+      "type": "string",
+      "description": "Internal supervision/alarm name after 'Name'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Log": {
+      "type": "string",
+      "description": "Operator-facing log text after 'Log'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace",
+        "repair_hyphenated_line_breaks",
+        "remove_soft_hyphen"
+      ]
+    },
+    "Subsystem name": {
+      "type": "string",
+      "description": "Subsystem name after 'Subsystem name'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Type": {
+      "type": "string",
+      "description": "Type after 'Type', e.g. Warning or Alarm.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "TimeOut": {
+      "type": "string",
+      "description": "Timeout value after 'TimeOut', e.g. '1800 Seconds'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace",
+        "repair_hyphenated_line_breaks"
+      ]
+    },
+    "Max Time": {
+      "type": "string",
+      "description": "Value shown next to 'Max. Time'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Max Time Eliminate": {
+      "type": "string",
+      "description": "Value shown next to 'Eliminate'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Category": {
+      "type": "string",
+      "description": "Category after 'Category'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Acknowledgement": {
+      "type": "string",
+      "description": "Acknowledgement mode after 'Acknowledgement'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "Criteria": {
+      "type": "string",
+      "description": "Full text under 'Criteria:', including prose and numbered conditions. This field also contains the \"Parameter found for Control System TM\" like this: /Drivetrain/GearboxCtrl/SV/TargetParams/OilTemp/MaxOilTempPx",
+      "normalizers": [
+        "trim",
+        "repair_hyphenated_line_breaks",
+        "remove_soft_hyphen",
+        "collapse_whitespace"
+      ]
+    }
+  }
+}

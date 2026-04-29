@@ -1,0 +1,121 @@
+{
+  "name": "wt500_supervision_entries_normalized",
+  "description": "Extraction profile for WT-500 supervision/alarm entries. Uses supported field normalizers where useful.",
+  "record_label": "entry",
+  "records_key": "records",
+  "key_field": "no",
+  "page_context": {
+    "following_pages": 1
+  },
+  "fields": {
+    "no": {
+      "type": "string",
+      "description": "Printed running entry number after 'No:'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "supervision_id": {
+      "type": "string",
+      "description": "Supervision identifier after 'SupervisionID'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "description": "Internal supervision/alarm name after 'Name'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "log_text": {
+      "type": "string",
+      "description": "Operator-facing log text after 'Log'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace",
+        "repair_hyphenated_line_breaks",
+        "remove_soft_hyphen"
+      ]
+    },
+    "subsystem_name": {
+      "type": "string",
+      "description": "Subsystem name after 'Subsystem name'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "entry_type": {
+      "type": "string",
+      "description": "Type after 'Type', e.g. Warning or Alarm.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "timeout": {
+      "type": "string",
+      "description": "Timeout value after 'TimeOut', e.g. '1800 Seconds'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace",
+        "repair_hyphenated_line_breaks"
+      ]
+    },
+    "max_time": {
+      "type": "string",
+      "description": "Value shown next to 'Max. Time'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "eliminate_time": {
+      "type": "string",
+      "description": "Value shown next to 'Eliminate'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "category": {
+      "type": "string",
+      "description": "Category after 'Category'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "acknowledgement": {
+      "type": "string",
+      "description": "Acknowledgement mode after 'Acknowledgement'.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace"
+      ]
+    },
+    "criteria_text": {
+      "type": "string",
+      "description": "Full text under 'Criteria:', including prose and numbered conditions.",
+      "normalizers": [
+        "trim",
+        "repair_hyphenated_line_breaks",
+        "remove_soft_hyphen"
+      ]
+    },
+    "parameter_reference": {
+      "type": "string",
+      "description": "Optional trailing parameter reference line.",
+      "normalizers": [
+        "trim",
+        "collapse_whitespace",
+        "repair_hyphenated_line_breaks"
+      ]
+    }
+  }
+}
